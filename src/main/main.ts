@@ -29,7 +29,24 @@ import { Store } from './store';
 import { UsageStore } from './usage';
 import { managedCodexPath, OnboardingRuntime } from './onboarding';
 import type { ModelOption } from '../shared/usage';
+import {
+  endedOutcome,
+  legacyStatus,
+  phaseOfMessage,
+  requestKind,
+  requestSummary,
+  runningPhase,
+  samePhase,
+  stampPlan,
+  toolTarget,
+  toolTitle,
+  failedStep,
+  unverifiedChecks,
+  type ResolvedRequest,
+} from '../shared/phase';
 import type {
+  ElementDetails,
+  ElementMention,
   AgentEvent,
   AgentId,
   AgentInfo,
@@ -96,9 +113,15 @@ let active:
       notifications: TurnNotifications;
       requests: PendingAgentRequest[];
       cancelled: boolean;
+      /** False until the CLI accepts the turn; drives the preparing phase. */
+      connected: boolean;
+      /** What the user decided for a request, recorded before the session resolves it. */
+      resolutions: Map<string, Pick<ResolvedRequest, 'resolution'> & { summary?: string }>;
       nativeApprovals: Map<string, (approved: boolean) => void>;
     }
   | undefined;
+/** Turn errors already shown inline on their message; they must not also raise a toast. */
+const inlineFailures = new WeakSet<object>();
 let startingTurn = false;
 let preparingTurn: { cancelled: boolean } | undefined;
 let lastFrame: BrowserFrame | undefined;
@@ -338,6 +361,68 @@ function prepareConversation(conversation: Conversation): Promise<void> {
   return request;
 }
 
+const MENTION_TOKEN = /^\[ele\d{1,3}\]$/;
+/**
+ * Resolves [eleN] tokens from the composer against the live page. Each element is inspected
+ * now, so the agent gets current references and a stale token fails before anything runs.
+ */
+async function resolveMentions(value: unknown) {
+  const none = { mentions: undefined, elementContext: undefined, first: undefined };
+  if (value === undefined) return none;
+  if (!Array.isArray(value) || value.length > 20) throw new Error('元素引用格式不正确');
+  const mentions: ElementMention[] = [];
+  const lines: string[] = [];
+  let first: ElementRef | undefined;
+  for (const raw of value) {
+    const item = record(raw);
+    const token = string(item.token, 12);
+    if (!MENTION_TOKEN.test(token)) throw new Error('元素引用格式不正确');
+    const ref = string(item.ref, 1500);
+    const edit =
+      item.edit === undefined || item.edit === null
+        ? undefined
+        : (record(item.edit) as ElementEdit);
+    let details: ElementDetails;
+    try {
+      details = await browser.getElementDetails(ref);
+    } catch {
+      throw new Error(`元素 ${token} 已不在页面上，请重新选取后发送。`);
+    }
+    first ??= details;
+    mentions.push({
+      token,
+      ref,
+      tag: details.tag,
+      name: details.name || details.tag,
+      role: details.role,
+      ...(edit ? { edit } : {}),
+    });
+    lines.push(
+      `${token} → ${JSON.stringify({
+        ref: details.ref,
+        tabId: details.tabId,
+        frameId: details.frameId,
+        documentId: details.documentId,
+        tag: details.tag,
+        role: details.role,
+        name: details.name,
+        selector: details.selector,
+        text: details.textContent?.slice(0, 200),
+        previewEdit: edit ?? null,
+      })}`,
+    );
+  }
+  if (!mentions.length) return none;
+  const elementContext = [
+    '<page_elements>',
+    '用户消息中的 [eleN] 标记指向下列页面元素；使用这里给出的精确引用，不要替换成其他元素。previewEdit 是用户在检查器里做的页面预览改动（仅当前 DOM，不代表源码已保存）。',
+    ...lines,
+    '页面效果调整直接使用元素编辑工具。仅当用户要求修改或保存到源码时，核实项目与页面的对应关系、定位真实组件并验证修改；不要把 DOM 预览当成源码修改。',
+    '</page_elements>',
+  ].join('\n');
+  return { mentions, elementContext, first };
+}
+
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value))
     throw new Error('请求格式不正确');
@@ -376,18 +461,44 @@ function createConversation(title = '新对话', agent = store.data.settings.age
 }
 function onAgentEvent(conversationId: string, assistant: ChatMessage, event: AgentEvent) {
   const conversation = getConversation(conversationId);
-  if (active?.conversationId === conversationId) {
+  const turn = active?.conversationId === conversationId ? active : undefined;
+  const before = assistant.phase;
+  if (turn) {
     if (event.type === 'approval' || event.type === 'user-input') {
-      active.requests = active.requests.filter((item) => item.request.id !== event.request.id);
-      active.requests.push(
+      const { id } = event.request;
+      turn.requests = turn.requests.filter((item) => item.request.id !== id);
+      turn.requests.push(
         event.type === 'approval'
           ? { conversationId, messageId: assistant.id, kind: 'approval', request: event.request }
           : { conversationId, messageId: assistant.id, kind: 'input', request: event.request },
       );
     } else if (event.type === 'request-resolved') {
-      active.requests = active.requests.filter((item) => item.request.id !== event.id);
-    } else if (event.type === 'complete' || event.type === 'error') active.requests = [];
-    active.notifications.handle(event);
+      const { id } = event;
+      const pending = turn.requests.find((item) => item.request.id === id);
+      const decision = turn.resolutions.get(id);
+      turn.resolutions.delete(id);
+      turn.requests = turn.requests.filter((item) => item.request.id !== id);
+      // Requests the session withdrew on its own leave no trace; only user decisions do.
+      if (pending && decision) {
+        const resolved: ResolvedRequest = {
+          id,
+          kind: requestKind(pending),
+          summary: decision.summary ?? requestSummary(pending),
+          resolution: decision.resolution,
+          at: Date.now(),
+        };
+        (assistant.requests ??= []).push(resolved);
+        event = { ...event, resolved };
+      }
+    } else if (event.type === 'complete' || event.type === 'error') turn.requests = [];
+    if (
+      event.type === 'delta' ||
+      event.type === 'tool' ||
+      event.type === 'run-started' ||
+      (event.type === 'status' && event.status !== 'starting' && event.status !== 'idle')
+    )
+      turn.connected = true;
+    turn.notifications.handle(event);
   }
   if (event.type === 'delta') assistant.text += event.text;
   if (event.type === 'run-started') {
@@ -412,15 +523,31 @@ function onAgentEvent(conversationId: string, assistant: ChatMessage, event: Age
   }
   if (event.type === 'tool') {
     assistant.tools ??= [];
-    const existing = assistant.tools.findIndex((tool) => tool.id === event.call.id);
-    if (existing >= 0) assistant.tools[existing] = event.call;
-    else assistant.tools.push(event.call);
+    const { id } = event.call;
+    const existing = assistant.tools.findIndex((tool) => tool.id === id);
+    // Not every CLI reports timing; the timeline needs it to order and time each action.
+    const startedAt = event.call.startedAt ?? assistant.tools[existing]?.startedAt ?? Date.now();
+    const call = { ...event.call, startedAt };
+    if (call.status !== 'running' && call.finishedAt === undefined) {
+      call.finishedAt = Date.now();
+      call.durationMs ??= call.finishedAt - startedAt;
+    }
+    event = { ...event, call };
+    if (existing >= 0) assistant.tools[existing] = call;
+    else assistant.tools.push(call);
   }
-  if (event.type === 'plan') assistant.plan = event.steps;
+  if (event.type === 'plan') {
+    event = { ...event, steps: stampPlan(assistant.plan, event.steps, event.at) };
+    assistant.plan = event.steps;
+  }
   if (event.type === 'web-execution') {
+    if (event.event.kind === 'plan' && event.event.plan) {
+      const plan = stampPlan(assistant.plan, event.event.plan, event.event.at);
+      event = { ...event, event: { ...event.event, plan } };
+      assistant.plan = plan;
+    }
     assistant.execution ??= [];
     assistant.execution.push(event.event);
-    if (event.event.kind === 'plan') assistant.plan = event.event.plan;
   }
   if (event.type === 'complete') {
     if (event.text && !assistant.text) assistant.text = event.text;
@@ -432,9 +559,33 @@ function onAgentEvent(conversationId: string, assistant: ChatMessage, event: Age
     assistant.failure = event.message;
     if (!assistant.text) assistant.text = event.message;
   }
+  if (event.type === 'complete' || event.type === 'error') endPhase(assistant, turn?.cancelled);
+  else if (turn && assistant.phase?.kind !== 'ended')
+    assistant.phase = runningPhase({
+      connected: turn.connected,
+      stopping: turn.cancelled,
+      requests: turn.requests,
+      tools: assistant.tools ?? [],
+    });
   conversation.updatedAt = Date.now();
   store.schedule();
-  emit({ type: 'agent:event', conversationId, messageId: assistant.id, event });
+  const send = (next: AgentEvent) =>
+    emit({ type: 'agent:event', conversationId, messageId: assistant.id, event: next });
+  const phase = assistant.phase;
+  // The ending events carry the settled phase so the renderer never guesses an outcome.
+  if (event.type === 'status' || event.type === 'complete' || event.type === 'error')
+    send({ ...event, phase });
+  else {
+    send(event);
+    if (phase && !samePhase(before, phase))
+      send({ type: 'status', status: legacyStatus(phase), phase });
+  }
+}
+/** Settles the phase of a finished turn; a result the user confirmed stays confirmed. */
+function endPhase(assistant: ChatMessage, cancelled = false) {
+  if (assistant.phase?.kind === 'ended' && assistant.phase.confirmed) return;
+  assistant.phase = { kind: 'ended', outcome: endedOutcome(assistant, cancelled) };
+  assistant.endedAt ??= Date.now();
 }
 function getSession(
   conversation: Conversation,
@@ -500,11 +651,10 @@ function getSession(
         if (current) {
           const unresolved =
             event.type === 'complete' ? neo.unresolvedResult(current.id) : undefined;
-          if (unresolved) {
-            if (current.text)
-              onAgentEvent(conversation.id, current, { type: 'delta', text: '\n\n' + unresolved });
+          // The outcome card explains an unverified result; the reply itself stays untouched.
+          if (unresolved)
             onAgentEvent(conversation.id, current, { type: 'error', message: unresolved });
-          } else onAgentEvent(conversation.id, current, event);
+          else onAgentEvent(conversation.id, current, event);
         }
       },
     });
@@ -519,6 +669,7 @@ async function runTurn(
   source: 'desktop' | 'feishu' = 'desktop',
   readonly = false,
   selectedElement?: ElementRef,
+  mentions?: ElementMention[],
 ) {
   assertTaskEnvironment();
   if (active || startingTurn) throw new Error('当前任务还在进行，请先停止或等待完成');
@@ -541,6 +692,7 @@ async function runTurn(
     status: 'done',
     source,
     context,
+    ...(mentions?.length ? { mentions } : {}),
   };
   const assistant: ChatMessage = {
     id: randomUUID(),
@@ -549,6 +701,7 @@ async function runTurn(
     createdAt: Date.now(),
     status: 'streaming',
     tools: [],
+    phase: { kind: 'preparing' },
   };
   conversation.messages.push(user, assistant);
   conversation.updatedAt = Date.now();
@@ -573,6 +726,7 @@ async function runTurn(
     preparingTurn = undefined;
     assistant.status = 'error';
     assistant.text = '任务已停止';
+    endPhase(assistant, true);
     usage.finish(assistant.id, 'cancelled');
     saveUsage();
     await store.save();
@@ -588,10 +742,12 @@ async function runTurn(
     assistant.status = 'error';
     assistant.failure = error instanceof Error ? error.message : 'CLI 会话配置无效';
     assistant.text = assistant.failure;
+    endPhase(assistant);
     usage.finish(assistant.id, 'failed');
     saveUsage();
     await store.save();
     emit({ type: 'conversation:updated', conversation });
+    if (error && typeof error === 'object') inlineFailures.add(error);
     throw error;
   }
   const notifications = new TurnNotifications(
@@ -607,6 +763,8 @@ async function runTurn(
     notifications,
     requests: [],
     cancelled: false,
+    connected: false,
+    resolutions: new Map(),
     nativeApprovals: new Map(),
   };
   startingTurn = false;
@@ -650,9 +808,11 @@ async function runTurn(
       type: 'error',
       message: error instanceof Error ? error.message : '任务未完成',
     });
-    throw notifications.includesSecretInput
+    const failure = notifications.includesSecretInput
       ? new Error('本轮包含受保护的信息，请在 Athena 查看执行详情。')
       : error;
+    if (failure && typeof failure === 'object') inlineFailures.add(failure);
+    throw failure;
   } finally {
     usage.finish(
       assistant.id,
@@ -665,6 +825,7 @@ async function runTurn(
     await neo.finishTask(assistant.id, assistant.status === 'done').catch(() => {});
     if (selectedElement && !readonly)
       await browser.setElementFeedback(selectedElement.ref, null).catch(() => {});
+    endPhase(assistant, active?.cancelled);
     try {
       await store.save();
     } finally {
@@ -680,7 +841,7 @@ async function runTurn(
         type: 'agent:event',
         conversationId: conversation.id,
         messageId: assistant.id,
-        event: { type: 'status', status: 'idle' },
+        event: { type: 'status', status: 'idle', phase: assistant.phase },
       });
     }
   }
@@ -689,11 +850,56 @@ async function stopTurn() {
   if (preparingTurn) preparingTurn.cancelled = true;
   if (!active) return;
   active.cancelled = true;
+  const turn = active;
+  const assistant = getConversation(turn.conversationId).messages.find(
+    (message) => message.id === turn.messageId,
+  );
+  // Stopping is a phase of its own: the row says so before the CLI confirms the interrupt.
+  if (assistant && assistant.phase?.kind !== 'ended')
+    onAgentEvent(turn.conversationId, assistant, {
+      type: 'status',
+      status: 'waiting',
+      label: '正在停止任务',
+    });
   browser.revokeAgentControl();
   for (const resolve of active.nativeApprovals.values()) resolve(false);
   active.nativeApprovals.clear();
   await neo.cancelTask();
   await active?.session.interrupt();
+}
+/** Hidden context for 再核对一次: the agent re-observes instead of repeating what it already did. */
+function recheckContext(message: ChatMessage): string {
+  const checks = unverifiedChecks(message)
+    .map((event) => event.summary)
+    .filter(Boolean);
+  return [
+    '<follow_up>',
+    '上一轮的网页操作结果没有核对成功。',
+    ...(checks.length ? ['未能核对的检查点：', ...checks.map((item) => `- ${item}`)] : []),
+    '先用 snapshot/read/grep 重新观察实际页面，再用 neo_checkpoint 引用页面原文给出结论。不要重复已生效的操作；仍无法确认时请求人工处理。',
+    '</follow_up>',
+  ].join('\n');
+}
+/** Visible text and hidden context for 修复并重试. */
+function retryRequest(message: ChatMessage, agent: AgentId) {
+  const failed = failedStep(message);
+  const target = failed && toolTarget(failed.tool);
+  return {
+    text: failed ? '修复并重试' : '重试',
+    context: [
+      '<follow_up>',
+      '上一轮没有完成。',
+      ...(failed
+        ? [
+            `失败的步骤：${toolTitle(failed.tool.name, agent)}${target ? ' ' + target : ''}`,
+            ...(failed.tool.output ? ['输出末尾：', failed.tool.output.slice(-2000)] : []),
+          ]
+        : []),
+      ...(message.failure ? [`失败原因：${message.failure}`] : []),
+      '先找出失败原因并修复，再继续未完成的步骤。不要重复已经生效的操作。',
+      '</follow_up>',
+    ].join('\n'),
+  };
 }
 function requestNativeApproval(request: Omit<ApprovalRequest, 'id' | 'kind'>): Promise<boolean> {
   const turn = active;
@@ -705,6 +911,18 @@ function requestNativeApproval(request: Omit<ApprovalRequest, 'id' | 'kind'>): P
   return new Promise((resolve) => {
     turn.nativeApprovals.set(id, (approved) => {
       turn.nativeApprovals.delete(id);
+      // A stop also rejects open approvals; only a decision made on the card is recorded.
+      if (!turn.cancelled)
+        turn.resolutions.set(id, {
+          resolution:
+            request.action === 'browser-help'
+              ? approved
+                ? 'done'
+                : 'dismissed'
+              : approved
+                ? 'approved'
+                : 'rejected',
+        });
       onAgentEvent(turn.conversationId, assistant, { type: 'request-resolved', id });
       if (active === turn && !turn.cancelled)
         onAgentEvent(turn.conversationId, assistant, {
@@ -731,11 +949,16 @@ function startTurn(
   context?: string,
   readonly = false,
   selectedElement?: ElementRef,
+  mentions?: ElementMention[],
 ) {
   assertTaskEnvironment();
   if (active || startingTurn) throw new Error('当前任务还在进行，请先停止');
-  void runTurn(conversation, text, context, 'desktop', readonly, selectedElement).catch((error) =>
-    notice(error instanceof Error ? error.message : '任务失败', 'error'),
+  void runTurn(conversation, text, context, 'desktop', readonly, selectedElement, mentions).catch(
+    (error) => {
+      // A failure that already sits on its message is not repeated as a toast.
+      if (!(error && typeof error === 'object' && inlineFailures.has(error)))
+        notice(error instanceof Error ? error.message : '任务失败', 'error');
+    },
   );
   return { conversationId: conversation.id };
 }
@@ -806,7 +1029,7 @@ async function createBrowserRuntime(binaryPath?: string) {
       emit({ type: 'browser:step', step });
       sharing?.onStep(step);
     },
-    onSelected: (element) => emit({ type: 'browser:selected', element }),
+    onSelected: (element, reason) => emit({ type: 'browser:selected', element, reason }),
     onHumanTakeover: () => {
       neo?.onHumanInteraction();
     },
@@ -1072,13 +1295,16 @@ async function invoke(action: string, payload: unknown) {
       assertTaskEnvironment();
       const data = record(payload);
       const context = data.context === undefined ? undefined : string(data.context, 60_000);
-      const selectedRef =
-        data.selectedRef === undefined ? undefined : string(data.selectedRef, 1500);
-      const selected = selectedRef ? browser.getState().selectedElement : undefined;
-      if (selectedRef && selected?.ref !== selectedRef)
-        throw new Error('选中的元素已变化，请重新选取后发送。');
+      const { mentions, elementContext, first } = await resolveMentions(data.mentions);
       const conversation = data.id ? getConversation(data.id) : createConversation();
-      return startTurn(conversation, string(data.text), context, false, selected);
+      return startTurn(
+        conversation,
+        string(data.text),
+        [context, elementContext].filter(Boolean).join('\n\n') || undefined,
+        false,
+        first,
+        mentions,
+      );
     }
     case 'conversation:stop':
       await stopTurn();
@@ -1095,7 +1321,16 @@ async function invoke(action: string, payload: unknown) {
       const id = string(data.id, 512);
       const native = active.nativeApprovals.get(id);
       if (native) native(data.approved);
-      else await active.session.resolveApproval(id, data.approved);
+      else {
+        const turn = active;
+        turn.resolutions.set(id, { resolution: data.approved ? 'approved' : 'rejected' });
+        try {
+          await turn.session.resolveApproval(id, data.approved);
+        } catch (error) {
+          turn.resolutions.delete(id);
+          throw error;
+        }
+      }
       return true;
     }
     case 'agent:user-input': {
@@ -1113,8 +1348,62 @@ async function invoke(action: string, payload: unknown) {
         if (!Array.isArray(values) || values.length > 20) throw new Error('回答格式不正确');
         checked[string(id, 200)] = values.map((value) => string(value, 20_000));
       }
-      active.session.resolveUserInput(string(data.id, 512), checked);
+      const turn = active;
+      const id = string(data.id, 512);
+      const pending = turn.requests.find((item) => item.request.id === id);
+      // Secret answers never reach the transcript; the timeline only records that one was given.
+      const summary =
+        pending?.kind === 'input'
+          ? pending.request.questions
+              .map((question) =>
+                question.isSecret ? '••••' : (checked[question.id] ?? []).join('、'),
+              )
+              .filter(Boolean)
+              .join(' / ')
+              .replace(/\s+/g, ' ')
+              .slice(0, 120)
+          : undefined;
+      turn.resolutions.set(id, { resolution: 'answered', summary });
+      try {
+        turn.session.resolveUserInput(id, checked);
+      } catch (error) {
+        turn.resolutions.delete(id);
+        throw error;
+      }
       return true;
+    }
+    case 'conversation:confirm-outcome': {
+      const data = record(payload);
+      const conversation = getConversation(data.conversationId);
+      const message = conversation.messages.find((item) => item.id === string(data.messageId, 100));
+      const phase = message && phaseOfMessage(message);
+      if (!message || phase?.kind !== 'ended' || phase.outcome !== 'blocked')
+        throw new Error('这条结果不需要确认');
+      // The user checked the page themselves; the turn counts as done on their word.
+      message.phase = { kind: 'ended', outcome: 'succeeded', confirmed: 'user' };
+      message.status = 'done';
+      if (message.text === message.failure) message.text = '';
+      message.failure = undefined;
+      await store.save();
+      emit({ type: 'conversation:updated', conversation });
+      return true;
+    }
+    case 'conversation:follow-up': {
+      assertTaskEnvironment();
+      const data = record(payload);
+      const conversation = getConversation(data.conversationId);
+      const message = conversation.messages.at(-1);
+      if (!message || message.role !== 'assistant' || message.id !== string(data.messageId, 100))
+        throw new Error('只能跟进最近一轮任务');
+      const phase = phaseOfMessage(message);
+      const outcome = phase.kind === 'ended' ? phase.outcome : undefined;
+      if (outcome === 'blocked')
+        return startTurn(conversation, '再核对一次', recheckContext(message));
+      if (outcome === 'failed') {
+        const { text, context } = retryRequest(message, conversationAgent(conversation));
+        return startTurn(conversation, text, context);
+      }
+      throw new Error('这一轮不需要跟进');
     }
     case 'settings:workspace': {
       if (active || startingTurn) throw new Error('请先停止当前任务');
