@@ -331,10 +331,13 @@ export interface ToolCall {
   startedAt?: number;
   finishedAt?: number;
   durationMs?: number;
+  exitCode?: number;
 }
 export interface AgentPlanStep {
   step: string;
   status: 'pending' | 'inProgress' | 'completed';
+  /** When the host first saw this step leave pending; orders it among the turn's actions. */
+  startedAt?: number;
 }
 /** Public execution facts, never private model reasoning or estimated progress. */
 export interface WebExecutionEvent {
@@ -370,6 +373,8 @@ export interface ApprovalRequest {
   detail: string;
   kind: 'command' | 'file' | 'other';
   action?: 'browser-script' | 'browser-upload' | 'browser-help';
+  /** The command or file the approval is about, shown once the request has been handled. */
+  target?: string;
 }
 export interface UserInputRequest {
   id: string;
@@ -409,12 +414,24 @@ export type AgentEvent =
       type: 'status';
       status: 'starting' | 'thinking' | 'working' | 'waiting' | 'idle';
       label?: string;
+      /** Set by the host; `status` and `label` stay for consumers that predate phases. */
+      phase?: import('./phase').TurnPhase;
     }
   | { type: 'approval'; request: ApprovalRequest }
   | { type: 'user-input'; request: UserInputRequest }
-  | { type: 'request-resolved'; id: string }
-  | { type: 'complete'; text?: string; sessionId?: string }
-  | { type: 'error'; message: string };
+  | { type: 'request-resolved'; id: string; resolved?: import('./phase').ResolvedRequest }
+  | { type: 'complete'; text?: string; sessionId?: string; phase?: import('./phase').TurnPhase }
+  | { type: 'error'; message: string; phase?: import('./phase').TurnPhase };
+/** A page element the user embedded in a message as an inline token such as [ele1]. */
+export interface ElementMention {
+  token: string;
+  ref: string;
+  tag: string;
+  name: string;
+  role?: string;
+  /** Preview edit made in the inspector that the user wants carried into source. */
+  edit?: ElementEdit;
+}
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
@@ -424,11 +441,17 @@ export interface ChatMessage {
   source?: 'desktop' | 'feishu';
   tools?: ToolCall[];
   context?: string;
+  mentions?: ElementMention[];
   neoSessionId?: string;
   plan?: AgentPlanStep[];
   execution?: WebExecutionEvent[];
   model?: import('./usage').ExecutionModel;
   failure?: string;
+  /** Last phase of the turn; the only source for status display. */
+  phase?: import('./phase').TurnPhase;
+  endedAt?: number;
+  /** Requests the user already handled during this turn. */
+  requests?: import('./phase').ResolvedRequest[];
 }
 export interface Conversation {
   id: string;
@@ -508,7 +531,7 @@ export type AppEvent =
   | { type: 'neo:state'; state: NativeNeoState }
   | { type: 'browser:frame'; frame: BrowserFrame }
   | { type: 'browser:step'; step: RecordedStep }
-  | { type: 'browser:selected'; element: ElementRef }
+  | { type: 'browser:selected'; element: ElementRef; reason?: 'pick' | 'edit' }
   | { type: 'recording:saved'; recording: Recording }
   | { type: 'agent:event'; conversationId: string; messageId: string; event: AgentEvent }
   | { type: 'feishu:state'; state: FeishuState }

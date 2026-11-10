@@ -151,14 +151,14 @@ try {
     while (Date.now() < until) {
       const state = await snapshot();
       for (const pending of state.pendingRequests ?? []) {
-        const panel = page.getByRole('region', { name: 'Agent 待处理事项', exact: true });
+        const panel = page.locator('.req[data-request-key]');
         await expect(panel).toHaveAttribute(
           'data-request-key',
           JSON.stringify([pending.conversationId, pending.messageId, pending.request.id]),
         );
         const allowed = allowFileTools && approvalAllowed(pending);
         await panel
-          .getByRole('button', { name: allowed ? '允许这次操作' : '拒绝', exact: true })
+          .getByRole('button', { name: allowed ? '允许这次' : '拒绝', exact: true })
           .click();
         assert.ok(allowed, 'An unreviewed or out-of-scope native operation was denied');
         evidence.approvals.push(pending.kind === 'approval' ? pending.request.title : '');
@@ -195,13 +195,10 @@ try {
   assert.equal(firstReply.model?.source, 'cli-message');
   assert.ok(firstReply.model?.model);
   evidence.model = firstReply.model;
-  const execution = page.getByRole('region', { name: '任务执行', exact: true });
-  await expect(
-    execution.getByRole('button', { name: '读取文件 已返回', exact: true }).first(),
-  ).toBeVisible();
-  await expect(
-    execution.getByRole('button', { name: '写入文件 已返回', exact: true }).first(),
-  ).toBeVisible();
+  const activity = page.locator('.activity').last();
+  await activity.locator('button.act').click();
+  for (const verb of ['读取', '写入'])
+    await expect(activity.locator('.tl-title', { hasText: verb }).first()).toBeVisible();
   await expect
     .poll(async () => (await snapshot()).codexConnection?.status, { timeout: 15000 })
     .toBe('ready');
@@ -277,7 +274,7 @@ try {
       { timeout: 15000 },
     )
     .toBe(true);
-  await expect(draft()).toHaveValue(nextDraft);
+  await expect(draft()).toHaveText(nextDraft);
   await expect(page.getByRole('button', { name: '发送任务', exact: true })).toBeEnabled();
   evidence.checks.push(
     'Actual UI Stop interrupts a streaming Pi task and preserves the next draft without queueing',

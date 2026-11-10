@@ -12,6 +12,7 @@ const output = path.resolve('test-results/conversation-archive');
 await mkdir(output, { recursive: true });
 const now = Date.now();
 const workspace = '/workspace/athena';
+const failedText = '调研页面没有响应，本轮未完成。';
 const turn = (id: string, question: string, answer: string, status = 'done') => [
   { id: `${id}-u`, role: 'user', text: question, createdAt: now, status: 'done' },
   { id: `${id}-a`, role: 'assistant', text: answer, createdAt: now, status, tools: [] },
@@ -76,7 +77,10 @@ const snapshot = {
       updatedAt: now - 3000,
       workspace,
       archivedAt: now - 500,
-      messages: turn('old', '调研归档方案', '调研结论已记录。'),
+      // 最近一轮只失败、没有回答：归档后只展示原因，不提供重试。
+      messages: turn('old', '调研归档方案', failedText, 'error').map((message) =>
+        message.role === 'assistant' ? { ...message, failure: failedText } : message,
+      ),
     },
     {
       id: 'other',
@@ -245,9 +249,10 @@ try {
     }, message);
   const toast = page.locator('.app-toast');
   const label = page.locator('.sidebar-section-label');
+  // 一行里除了标题还可能有状态回声（如“运行中”），这里只读标题。
   const listed = async () =>
-    (await page.locator('.conversation-list .conversation-link').allInnerTexts()).map((text) =>
-      text.trim(),
+    (await page.locator('.conversation-list .conversation-link > span').allInnerTexts()).map(
+      (text) => text.trim(),
     );
   const row = (title: string) => page.locator('.conversation-row', { hasText: title });
   const rowLink = (title: string) => row(title).locator('.conversation-link');
@@ -258,7 +263,7 @@ try {
   const showArchived = page.getByRole('button', { name: '已归档', exact: true });
   const showOpen = page.getByRole('button', { name: '返回对话列表', exact: true });
   const composer = page.getByRole('textbox', { name: '发送给 Agent 的任务', exact: true });
-  const current = page.locator('.conversation-link[aria-current="page"]');
+  const current = page.locator('.conversation-link[aria-current="page"] > span');
   const dialog = page.getByRole('alertdialog');
   const archivedNotice = page.locator('.archived-notice');
   const opacity = (title: string) =>
@@ -270,7 +275,9 @@ try {
   const focusedConversation = () =>
     page.evaluate(() => {
       const node = document.activeElement;
-      return node?.matches('.conversation-link') ? (node.textContent ?? '').trim() : null;
+      return node?.matches('.conversation-link')
+        ? (node.querySelector(':scope > span')?.textContent ?? '').trim()
+        : null;
     });
   const header = (name: string) =>
     page.evaluate((text) => {
@@ -420,8 +427,15 @@ try {
     'an archived conversation is never prepared for a CLI connection',
   );
   await page.screenshot({ path: path.join(output, 'archived-view.png') });
+  const outcome = page.locator('.req.outcome');
+  await rowLink('上周的调研').click();
+  await expect(outcome).toContainText(failedText);
+  await expect(outcome.getByRole('button')).toHaveCount(0);
+  await expect(archivedNotice).toBeVisible();
+  await rowLink('整理发布计划').click();
+  await expect(outcome).toHaveCount(0);
   checks.push(
-    'The archived view lists only this workspace’s archived conversations; an archived conversation opens read-only with a restore entry, is not prepared for the CLI and shows no ready connection',
+    'The archived view lists only this workspace’s archived conversations; an archived conversation opens read-only with a restore entry, is not prepared for the CLI and shows no ready connection; a failed last turn shows its reason without a retry',
   );
 
   mark = await callCount();
