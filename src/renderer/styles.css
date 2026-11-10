@@ -529,6 +529,9 @@ select {
 .message .chat-message__actions:focus-within {
   opacity: 1;
 }
+.message.user .chat-message__actions {
+  margin-top: 4px;
+}
 
 /* Composer: the Pro component owns input sizing, keyboard actions and run states. */
 .composer-area {

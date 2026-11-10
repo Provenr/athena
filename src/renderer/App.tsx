@@ -427,6 +427,22 @@ export default function App() {
     },
     [showToast],
   );
+  /** 只复制消息正文；页面上下文、工具事件和执行记录不进入剪贴板。 */
+  const copyMessage = useCallback(
+    async (message: ChatMessage) => {
+      const label = message.role === 'user' ? '消息' : '回答';
+      try {
+        const copied = await window.workbench.invoke<boolean>('app:copy', {
+          text: message.role === 'user' ? message.text : replyText(message),
+        });
+        if (copied !== true) throw new Error('没有收到复制结果，请重试');
+        showToast(`已复制${label}`, false, message.id);
+      } catch (error) {
+        showToast(`复制${label}失败：${errorText(error)}`, true);
+      }
+    },
+    [showToast],
+  );
   const upsert = useCallback((next: Conversation) => {
     setConversations((previous) =>
       [next, ...previous.filter((item) => item.id !== next.id)].sort(
@@ -1690,6 +1706,18 @@ export default function App() {
                                       已附加页面上下文
                                     </div>
                                   )}
+                                  {message.text && (
+                                    <ChatMessageActions>
+                                      <Tooltip delay={500}>
+                                        <ChatMessageActions.Copy
+                                          aria-label="复制消息"
+                                          isCopied={toast?.copiedMessageId === message.id}
+                                          onPress={() => copyMessage(message)}
+                                        />
+                                        <Tooltip.Content>复制消息</Tooltip.Content>
+                                      </Tooltip>
+                                    </ChatMessageActions>
+                                  )}
                                 </ProChatMessage.User>
                               ) : (
                                 <ProChatMessage.Assistant>
@@ -1741,16 +1769,7 @@ export default function App() {
                                                 <ChatMessageActions.Copy
                                                   aria-label="复制回答"
                                                   isCopied={toast?.copiedMessageId === message.id}
-                                                  onPress={async () => {
-                                                    const copied = await action<boolean>(
-                                                      'app:copy',
-                                                      {
-                                                        text: replyText(message),
-                                                      },
-                                                    );
-                                                    if (copied)
-                                                      showToast('已复制回答', false, message.id);
-                                                  }}
+                                                  onPress={() => copyMessage(message)}
                                                 />
                                                 <Tooltip.Content>复制回答</Tooltip.Content>
                                               </Tooltip>
