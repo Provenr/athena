@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react';
-import { displayPhase } from '../shared/phase';
+import { displayPhase, replyText } from '../shared/phase';
 import type { AgentId, ChatMessage, PendingAgentRequest } from '../shared/types';
 import { ActivityRow } from './ActivityRow';
 import { ActivityTimeline } from './ActivityTimeline';
@@ -8,7 +8,8 @@ import { RequestCard } from './RequestCard';
 
 /**
  * Status of one assistant turn, laid out in reading order: what it is doing, what it needs from
- * the user, the reply (`children`), and what is left to decide once it has ended.
+ * the user, the reply (`children`), and what is left to decide once it has ended. `actions` sit
+ * right under the text they act on: the reply, or the outcome card when there is no reply.
  */
 export function AssistantTurn({
   message,
@@ -19,6 +20,7 @@ export function AssistantTurn({
   busy,
   onAction,
   onShowBrowser,
+  actions,
   children,
 }: {
   message: ChatMessage;
@@ -31,6 +33,7 @@ export function AssistantTurn({
   busy: boolean;
   onAction: <T = unknown>(action: string, payload?: unknown) => Promise<T>;
   onShowBrowser: () => void;
+  actions?: ReactNode;
   children?: ReactNode;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -46,6 +49,7 @@ export function AssistantTurn({
   // A plain answer needs no status line once it is there to read.
   const quiet = phase.kind === 'ended' && phase.outcome === 'succeeded' && !detailed;
   const outcome = phase.kind === 'ended' ? phase.outcome : undefined;
+  const replied = !!replyText(message);
   const target = { conversationId, messageId: message.id };
   return (
     <>
@@ -81,6 +85,7 @@ export function AssistantTurn({
           />
         ))}
       {children}
+      {replied && actions}
       {last && (outcome === 'blocked' || outcome === 'failed') && (
         <OutcomeCard
           message={message}
@@ -95,6 +100,7 @@ export function AssistantTurn({
           }}
         />
       )}
+      {!replied && actions}
     </>
   );
 }

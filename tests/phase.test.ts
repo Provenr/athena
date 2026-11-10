@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   changedFiles,
+  copyableText,
   endedOutcome,
   failedStep,
   legacyStatus,
@@ -9,6 +10,7 @@ import {
   phaseOfMessage,
   phaseText,
   phaseTitle,
+  replyText,
   requestSummary,
   resolvedText,
   runningPhase,
@@ -303,4 +305,27 @@ test('the timeline merges plan, actions, checkpoints and requests by time', () =
     stopped.map((item) => 'state' in item && item.state),
     ['todo', 'stopped'],
   );
+});
+
+test('a turn offers its reply for copying, or the bare failure its outcome card shows', () => {
+  const message = (patch: Partial<ChatMessage>): ChatMessage => ({
+    id: 'a',
+    role: 'assistant',
+    text: '',
+    createdAt: 0,
+    status: 'done',
+    ...patch,
+  });
+  const answered = message({ text: '已完成' });
+  assert.equal(copyableText(answered, false), '已完成');
+  // A failed turn that still said something: the reply is copied, the reason stays in the card.
+  const partial = message({ text: '改了一半', status: 'error', failure: '模型服务中断' });
+  assert.equal(replyText(partial), '改了一半');
+  assert.equal(copyableText(partial, true), '改了一半');
+  // Only the failure: no reply is rendered, and the card that shows it exists on the latest turn.
+  const bare = message({ text: '模型服务中断', status: 'error', failure: '模型服务中断' });
+  assert.equal(replyText(bare), '');
+  assert.equal(copyableText(bare, true), '模型服务中断');
+  assert.equal(copyableText(bare, false), '');
+  assert.equal(copyableText(message({ text: '任务已停止', status: 'error' }), true), '');
 });

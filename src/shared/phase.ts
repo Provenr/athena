@@ -355,6 +355,17 @@ export function replyText(message: ChatMessage): string {
   if (phase.kind !== 'ended' || phase.outcome === 'succeeded') return message.text;
   return message.text === message.failure || message.text === '任务已停止' ? '' : message.text;
 }
+/**
+ * What the copy entry of a turn hands over: its reply, or, on the latest turn that only failed,
+ * the failure its outcome card shows in place of a reply.
+ */
+export function copyableText(message: ChatMessage, last: boolean): string {
+  const reply = replyText(message);
+  if (reply || !last) return reply;
+  const phase = phaseOfMessage(message);
+  const failed = phase.kind === 'ended' && phase.outcome === 'failed';
+  return failed && message.text === message.failure ? message.text : '';
+}
 /** Coarse status kept for consumers that predate phases. */
 export function legacyStatus(
   phase: TurnPhase,

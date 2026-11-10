@@ -54,6 +54,7 @@ import { UserMenu, WebContextMenu, useAppearance } from './HomeMenus';
 import { Onboarding } from './Onboarding';
 import type { OnboardingState } from '../shared/onboarding';
 import {
+  copyableText,
   displayPhase,
   endedOutcome,
   phaseGlyph,
@@ -432,9 +433,7 @@ export default function App() {
     async (message: ChatMessage) => {
       const label = message.role === 'user' ? '消息' : '回答';
       try {
-        const copied = await window.workbench.invoke<boolean>('app:copy', {
-          text: message.role === 'user' ? message.text : replyText(message),
-        });
+        const copied = await window.workbench.invoke<boolean>('app:copy', { text: message.text });
         if (copied !== true) throw new Error('没有收到复制结果，请重试');
         showToast(`已复制${label}`, false, message.id);
       } catch (error) {
@@ -1737,6 +1736,35 @@ export default function App() {
                                       busy={busy}
                                       onAction={action}
                                       onShowBrowser={() => setBrowserVisible(true)}
+                                      actions={
+                                        message.status !== 'streaming' &&
+                                        (copyableText(message, message === messages.at(-1)) ||
+                                          message.neoSessionId) && (
+                                          <ChatMessageActions>
+                                            {copyableText(message, message === messages.at(-1)) && (
+                                              <Tooltip delay={500}>
+                                                <ChatMessageActions.Copy
+                                                  aria-label="复制回答"
+                                                  isCopied={toast?.copiedMessageId === message.id}
+                                                  onPress={() => copyMessage(message)}
+                                                />
+                                                <Tooltip.Content>复制回答</Tooltip.Content>
+                                              </Tooltip>
+                                            )}
+                                            {message.neoSessionId && (
+                                              <ProChatMessage.Action
+                                                isIconOnly={false}
+                                                onPress={() => {
+                                                  setNativeRecordId(message.neoSessionId);
+                                                  setBrowserVisible(true);
+                                                }}
+                                              >
+                                                查看网页执行过程
+                                              </ProChatMessage.Action>
+                                            )}
+                                          </ChatMessageActions>
+                                        )
+                                      }
                                     >
                                       {replyText(message) && (
                                         <ProChatMessage.Content className="markdown">
@@ -1761,32 +1789,6 @@ export default function App() {
                                           </Markdown>
                                         </ProChatMessage.Content>
                                       )}
-                                      {message.status !== 'streaming' &&
-                                        (replyText(message) || message.neoSessionId) && (
-                                          <ChatMessageActions>
-                                            {replyText(message) && (
-                                              <Tooltip delay={500}>
-                                                <ChatMessageActions.Copy
-                                                  aria-label="复制回答"
-                                                  isCopied={toast?.copiedMessageId === message.id}
-                                                  onPress={() => copyMessage(message)}
-                                                />
-                                                <Tooltip.Content>复制回答</Tooltip.Content>
-                                              </Tooltip>
-                                            )}
-                                            {message.neoSessionId && (
-                                              <ProChatMessage.Action
-                                                isIconOnly={false}
-                                                onPress={() => {
-                                                  setNativeRecordId(message.neoSessionId);
-                                                  setBrowserVisible(true);
-                                                }}
-                                              >
-                                                查看网页执行过程
-                                              </ProChatMessage.Action>
-                                            )}
-                                          </ChatMessageActions>
-                                        )}
                                     </AssistantTurn>
                                   </ProChatMessage.Body>
                                 </ProChatMessage.Assistant>
