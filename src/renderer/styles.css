@@ -531,6 +531,9 @@ select {
 .message .chat-message__actions:focus-within {
   opacity: 1;
 }
+.message.user .chat-message__actions {
+  margin-top: 4px;
+}
 .message-failure {
   font-size: 11px;
   color: var(--danger);
