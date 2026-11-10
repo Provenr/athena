@@ -23,6 +23,7 @@ import { createAgentSession } from './agent-factory';
 import type { AgentSession } from './agent-session';
 import { conversationAgent, conversationModelSelection, supportsBrowser } from '../shared/agents';
 import { NeoBrowserRuntime } from './neo-browser';
+import { copyText } from './clipboard';
 import { FeishuConnector } from './feishu';
 import { TurnNotifications } from './notifications';
 import { Store } from './store';
@@ -1231,8 +1232,7 @@ async function invoke(action: string, payload: unknown) {
       await feishu.disconnect();
       return feishu.getState();
     case 'app:copy':
-      clipboard.writeText(string(record(payload).text, 100_000));
-      return true;
+      return copyText(clipboard, record(payload).text);
     case 'shell:openExternal': {
       const url = new URL(string(record(payload).url, 8000));
       if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password)
