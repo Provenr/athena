@@ -362,9 +362,19 @@ try {
   await feishuMessage.getByRole('button', { name: '复制消息', exact: true }).click();
   assert.deepEqual((await copies()).at(-1), { text: feishuText });
   const failedMessage = page.locator('article.message.assistant').nth(1);
-  await expect(failedMessage).toContainText('这次任务未完成');
-  await failedMessage.getByRole('button', { name: '复制回答', exact: true }).click();
+  await expect(failedMessage).toContainText('任务未完成');
+  const failedCopy = failedMessage.getByRole('button', { name: '复制回答', exact: true });
+  // 只有失败原因的一轮没有回复正文：原因显示在结果卡片里，复制入口紧跟在卡片下方。
+  const failedCard = failedMessage.locator('.req.outcome');
+  await expect(failedCard).toContainText(failedText);
+  assert.ok(
+    (await failedCopy.boundingBox())!.y >=
+      (await failedCard.boundingBox())!.y + (await failedCard.boundingBox())!.height,
+    'the copy entry of a failed turn sits under its outcome card',
+  );
+  await failedCopy.click();
   assert.deepEqual((await copies()).at(-1), { text: failedText });
+  await failedMessage.screenshot({ path: path.join(output, 'failed-copy.png') });
   assert.ok(
     !JSON.stringify(await copies()).includes('private_'),
     'attached context, tool input and tool output never enter the copied text',

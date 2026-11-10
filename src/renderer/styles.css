@@ -5,16 +5,14 @@
 @import '@heroui-pro/react/css/components/prompt-suggestion.css';
 @import '@heroui-pro/react/css/components/chat-attachment.css';
 @import '@heroui-pro/react/css/components/chat-message-actions.css';
-@import '@heroui-pro/react/css/components/chat-tool.css';
 @import '@heroui-pro/react/css/components/code-block.css';
-@import '@heroui-pro/react/css/components/text-shimmer.css';
-@import '@heroui-pro/react/css/components/timeline.css';
 @import '@heroui-pro/react/css/components/radio-button-group.css';
 @import '@heroui-pro/react/css/components/chat-message.css';
 @import '@heroui-pro/react/css/components/segment.css';
 @import '@heroui-pro/react/css/components/command.css';
 @import './theme.css';
 @import './agent-experience.css';
+@import './activity.css';
 @import './model-controls.css';
 
 * {
@@ -533,68 +531,6 @@ select {
 }
 .message.user .chat-message__actions {
   margin-top: 4px;
-}
-.message-failure {
-  font-size: 11px;
-  color: var(--danger);
-}
-.thinking-line {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 11px;
-  color: var(--muted);
-  padding-top: 9px;
-}
-.thinking-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--accent);
-  animation: breathe 1.6s ease infinite;
-}
-.tool-activity {
-  display: flex;
-  align-items: flex-start;
-  flex-direction: column;
-  gap: 5px;
-  margin: 0 0 14px;
-}
-.tool-call {
-  max-width: 100%;
-  font-size: 11px;
-  color: var(--muted);
-}
-.tool-call summary {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
-  list-style: none;
-  border-radius: 8px;
-  padding: 5px 7px;
-}
-.tool-call summary:hover {
-  background: var(--surface-secondary);
-}
-.tool-call summary::-webkit-details-marker {
-  display: none;
-}
-.tool-call[open] summary > svg:last-child {
-  transform: rotate(90deg);
-}
-.tool-call pre {
-  max-height: 220px;
-  overflow: auto;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  padding: 12px;
-  background: var(--surface-secondary);
-  border-radius: 10px;
-  font-size: 10px;
-}
-.tool-call.error {
-  color: var(--danger);
 }
 
 /* Composer: the Pro component owns input sizing, keyboard actions and run states. */
@@ -1478,11 +1414,11 @@ select {
   padding-top: 11px;
   border-top: 1px solid var(--line);
 }
-.chat-panel.is-editing .composer [data-slot='prompt-input-textarea'] {
+.chat-panel.is-editing .composer [data-slot='prompt-input-textarea'],
+.chat-panel.is-editing .composer [data-slot='prompt-input-token-input'] {
   min-height: 42px;
   padding-top: 11px;
 }
-.chat-panel.is-editing .selected-context,
 .chat-panel.is-editing .composer-footer {
   display: none;
 }
@@ -2251,15 +2187,27 @@ select {
     transition-property: background-color, border-color, box-shadow, outline-color;
   }
 }
-.composer [data-slot='prompt-input-shell']:has([data-slot='prompt-input-textarea']:focus) {
+.composer [data-slot='prompt-input-shell']:has([data-slot='prompt-input-textarea']:focus),
+.composer [data-slot='prompt-input-shell']:has([data-slot='prompt-input-token-input']:focus) {
   outline: 2px solid var(--accent);
 }
-.composer [data-slot='prompt-input-textarea'] {
+.composer [data-slot='prompt-input-textarea'],
+.composer [data-slot='prompt-input-token-input'] {
   font-size: 14px;
   line-height: 24px;
   min-height: 70px;
   margin-bottom: 0;
   padding: 16px 16px 8px;
+}
+.composer [data-slot='prompt-input-token-input'] {
+  outline: none;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.composer [data-slot='prompt-input-token-input'][data-empty]::before {
+  content: attr(data-placeholder);
+  color: var(--muted);
+  pointer-events: none;
 }
 .composer-controls {
   display: grid;
@@ -2379,7 +2327,7 @@ select {
 .local-user-avatar .avatar__fallback {
   color: var(--brand-blue);
 }
-.conversation-link svg:not(.spin) {
+.conversation-link svg:not(.spin, .phase-glyph) {
   display: none;
 }
 .local-user-copy {
@@ -2834,4 +2782,36 @@ html[data-theme='dark'] .composer [data-slot='prompt-input-shell'] {
   .topbar .local-agent-status .agent-status-caption {
     display: none;
   }
+}
+
+/* Page elements embedded in the composer as inline tokens, and as chips once sent. */
+.composer .element-token {
+  margin: 0 1px;
+  padding: 1px 7px 1px 5px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 18px;
+  vertical-align: baseline;
+}
+.composer .element-token-body {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.composer .element-token small {
+  font-size: 10px;
+  opacity: 0.7;
+}
+.element-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 1px;
+  padding: 0 7px 0 5px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+  font-size: 12px;
+  line-height: 18px;
+  vertical-align: baseline;
 }
